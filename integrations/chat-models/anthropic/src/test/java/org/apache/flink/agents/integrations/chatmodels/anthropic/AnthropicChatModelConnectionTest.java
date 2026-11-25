@@ -1434,4 +1434,116 @@ class AnthropicChatModelConnectionTest {
         assertThat(blocks.get(1).asRedactedThinking().data()).isEqualTo("opaque");
         assertThat(blocks.get(2).asText().text()).isEqualTo("answer");
     }
+
+    // ---- max_retries type-safety tests (FLINK-AGENTS bug fix) ----
+
+    /**
+     * max_retries must survive a JSON round-trip. The {@code InitialArgumentSerializer}
+     * serializes a plain {@code Integer} as a JSON number, and Jackson deserializes
+     * it back as {@code Integer} or {@code Long} depending on magnitude, so the
+     * connection must accept any {@code Number} rather than only {@code Integer}.
+     *
+     * @see <a href="https://github.com/apache/flink-agents/issues">Issue</a>
+     */
+    @Test
+    void testMaxRetriesIntegerAfterJsonRoundTrip() throws Exception {
+        for (Object value : List.of(3, 0, 10)) {
+            ResourceDescriptor descriptor =
+                    ResourceDescriptor.Builder.newBuilder(
+                                    AnthropicChatModelConnection.class.getName())
+                            .addInitialArgument("api_key", "test-key")
+                            .addInitialArgument("max_retries", value)
+                            .build();
+            // Simulate StreamGraph serialization → TaskManager deserialization
+            descriptor =
+                    MAPPER.readValue(
+                            MAPPER.writeValueAsString(descriptor), ResourceDescriptor.class);
+            AnthropicChatModelConnection connection =
+                    new AnthropicChatModelConnection(descriptor, NOOP);
+            connection.close();
+        }
+    }
+
+    /**
+     * Non-integer Number types for max_retries should be rejected with a clear message
+     * rather than a ClassCastException.
+     */
+    @Test
+    void testMaxRetriesRejectsNonNumber() {
+        ResourceDescriptor descriptor =
+                ResourceDescriptor.Builder.newBuilder(
+                                AnthropicChatModelConnection.class.getName())
+                        .addInitialArgument("api_key", "test-key")
+                        .addInitialArgument("max_retries", "three")
+                        .build();
+        assertThatThrownBy(
+                        () -> new AnthropicChatModelConnection(descriptor, NOOP))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("max_retries must be a number");
+    }
+
+    /**
+     * Negative max_retries should be rejected.
+     */
+    @Test
+    void testMaxRetriesRejectsNegative() {
+        ResourceDescriptor descriptor =
+                ResourceDescriptor.Builder.newBuilder(
+                                AnthropicChatModelConnection.class.getName())
+                        .addInitialArgument("api_key", "test-key")
+                        .addInitialArgument("max_retries", -1)
+                        .build();
+        assertThatThrownBy(
+                        () -> new AnthropicChatModelConnection(descriptor, NOOP))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("max_retries must be non-negative");
+    }
+
+    /**
+     * When max_retries is a Long (as Jackson may deserialize large integers),
+     * it should still be accepted.
+     */
+    @Test
+    void testMaxRetriesAcceptsLong() {
+        ResourceDescriptor descriptor =
+                ResourceDescriptor.Builder.newBuilder(
+                                AnthropicChatModelConnection.class.getName())
+                        .addInitialArgument("api_key", "test-key")
+                        .addInitialArgument("max_retries", 5L)
+                        .build();
+        // Manually put a Long into the arguments to simulate post-deserialization state
+        AnthropicChatModelConnection connection =
+                new AnthropicChatModelConnection(descriptor, NOOP);
+        connection.close();
+    }
+
+    /**
+     * The chat() method must include the cause message in the RuntimeException
+     * so that {@link ChatModelInvoker#errorText} can surface it to the user.
+     *
+     * <p>Feeds an empty message list with max_tokens set so the request reaches the SDK
+     * and triggers an API-level error (the SDK requires max_tokens, so an absent one
+     * is an IllegalArgumentException re-thrown as RuntimeException by the catch-all).
+     */
+    @Test
+    void testChatExceptionIncludesCauseMessage() {
+        ResourceDescriptor descriptor =
+                ResourceDescriptor.Builder.newBuilder(
+                                AnthropicChatModelConnection.class.getName())
+                        .addInitialArgument("api_key", "test-key")
+                        .build();
+        AnthropicChatModelConnection connection =
+                new AnthropicChatModelConnection(descriptor, NOOP);
+        try {
+            // An empty message list with no max_tokens triggers an IllegalStateException
+            // from the SDK builder, which chat() wraps in RuntimeException.
+            assertThatThrownBy(() -> connection.chat(List.of(), null, Map.of(), null))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasMessageContaining("Failed to call Anthropic messages API")
+                    .hasMessageContaining("Cause:");
+        } finally {
+            connection.close();
+        }
+    }
+
 }

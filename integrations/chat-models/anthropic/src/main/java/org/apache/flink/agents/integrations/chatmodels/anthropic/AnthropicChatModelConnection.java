@@ -102,9 +102,18 @@ public class AnthropicChatModelConnection extends BaseChatModelConnection {
             builder.timeout(timeout);
         }
 
-        Integer maxRetries = descriptor.getArgument("max_retries");
-        if (maxRetries != null && maxRetries >= 0) {
-            builder.maxRetries(maxRetries);
+        Object maxRetriesRaw = descriptor.getArgument("max_retries");
+        if (maxRetriesRaw instanceof Number) {
+            int maxRetries = ((Number) maxRetriesRaw).intValue();
+            if (maxRetries >= 0) {
+                builder.maxRetries(maxRetries);
+            } else {
+                throw new IllegalArgumentException(
+                        "max_retries must be non-negative, got: " + maxRetries);
+            }
+        } else if (maxRetriesRaw != null) {
+            throw new IllegalArgumentException(
+                    "max_retries must be a number, got: " + maxRetriesRaw);
         }
 
         this.defaultModel = descriptor.getArgument("model");
@@ -516,7 +525,8 @@ public class AnthropicChatModelConnection extends BaseChatModelConnection {
             // Unchanged, so callers can catch it by type; other build failures stay wrapped.
             throw e;
         } catch (Exception e) {
-            throw new RuntimeException("Failed to call Anthropic messages API.", e);
+            throw new RuntimeException(
+                    "Failed to call Anthropic messages API. Cause: " + e.getMessage(), e);
         }
     }
 

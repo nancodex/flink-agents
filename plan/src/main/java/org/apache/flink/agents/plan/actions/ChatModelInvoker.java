@@ -127,10 +127,23 @@ public final class ChatModelInvoker {
                 && error.getCause() instanceof Exception) {
             error = (Exception) error.getCause();
         }
+        String message = error.getClass().getName() + ": " + String.valueOf(error.getMessage());
+        // Include the root cause when present, so API errors and other wrapped failures
+        // carry the underlying reason instead of only the wrapper's message.
+        Throwable cause = error.getCause();
+        if (cause != null) {
+            String causeMessage =
+                    cause instanceof InvocationFailure || cause instanceof ModelRoutingResolver.RoutingFailure
+                            ? cause.getMessage()
+                            : cause.getClass().getName() + ": " + String.valueOf(cause.getMessage());
+            if (!causeMessage.isEmpty() && !message.contains(causeMessage)) {
+                message += " [caused by: " + causeMessage + "]";
+            }
+        }
         return error instanceof InvocationFailure
                         || error instanceof ModelRoutingResolver.RoutingFailure
                 ? error.getMessage()
-                : error.getClass().getName() + ": " + String.valueOf(error.getMessage());
+                : message;
     }
 
     public static final class ChatAttemptResult {
